@@ -53,6 +53,49 @@ extern CGSError CPSSetFrontProcess( const CPSProcessSerNum *pPSN);
 
 static TPMainController * _mainController = nil;
 
+/* Persistent plaintext log: see the TPLog macro in common.h. Serialised on a
+   private queue because callers run on the main thread, the posting queue and
+   socket callbacks alike. Rotates at 1 MB to .old. */
+void TPLogWrite(NSString *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+	va_end(args);
+
+	NSString *line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], message];
+
+	static dispatch_queue_t logQueue = NULL;
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+		logQueue = dispatch_queue_create("teleport.log", DISPATCH_QUEUE_SERIAL);
+	});
+
+	dispatch_async(logQueue, ^{
+		NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/teleport-pro.log"];
+		NSString *oldPath = [path stringByAppendingString:@".old"];
+		NSFileManager *fileManager = [NSFileManager defaultManager];
+
+		NSDictionary *attributes = [fileManager attributesOfItemAtPath:path error:nil];
+		if([attributes fileSize] > 1024 * 1024) {
+			[fileManager removeItemAtPath:oldPath error:nil];
+			[fileManager moveItemAtPath:path toPath:oldPath error:nil];
+		}
+
+		NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:path];
+		if(fileHandle == nil) {
+			[line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		}
+		else {
+			[fileHandle seekToEndOfFile];
+			[fileHandle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+			[fileHandle closeFile];
+		}
+	});
+
+	NSLog(@"teleport: %@", message);
+}
+
 @interface TPMainController (Internal)
 
 - (void)_checkAccessibility;
@@ -224,6 +267,7 @@ static TPMainController * _mainController = nil;
 
 - (void)screenDidLock:(NSNotification*)notification
 {
+	TPLog(@"screen locked");
 	TPClientController * clientController = [TPClientController defaultController];
 	if([clientController isControlling])
 		[clientController stopControl];
@@ -236,6 +280,7 @@ static TPMainController * _mainController = nil;
 
 - (void)screensDidSleep:(NSNotification*)notification
 {
+	TPLog(@"screens went to sleep");
 	DebugLog(@"sleeping screens");
 	[self _invalidateTimer];
 	TPClientController * clientController = [TPClientController defaultController];
@@ -247,6 +292,7 @@ static TPMainController * _mainController = nil;
 
 - (void)screensDidWake:(NSNotification*)notification
 {
+	TPLog(@"screens woke up");
 	DebugLog(@"waking screens");
 	[self _setupTimer];
 	[self _sendWakeEvent];
@@ -254,42 +300,46 @@ static TPMainController * _mainController = nil;
 }
 - (void)sessionDidResignActive:(NSNotification*)notification
 {
+	TPLog(@"session resigned active (switching away or lock)");
 	TPClientController * clientController = [TPClientController defaultController];
 	if([clientController isControlling])
 		[clientController stopControl];
 	else
 		[clientController setCurrentConnection:nil];
-	
+
 	TPServerController * serverController = [TPServerController defaultController];
 	if([serverController isControlled])
 		[serverController stopControl];
 	else
 		[serverController setCurrentConnection:nil];
-	
+
 	if([serverController allowControl])
 		[serverController stopSharing];
 }
 
 - (void)sessionDidBecomeActive:(NSNotification*)notification
 {
+	TPLog(@"session became active");
 	if([[TPServerController defaultController] allowControl])
 		[[TPServerController defaultController] startSharing];
 }
 
 - (void)computerWillSleep:(NSNotification*)notification
 {
+	TPLog(@"computer going to sleep");
 	if([[TPClientController defaultController] isControlling])
 		[[TPClientController defaultController] stopControl];
-	
+
 	if([[TPServerController defaultController] allowControl])
 		[[TPServerController defaultController] stopSharing];
-	
+
 	[[TPHostsManager defaultManager] saveHosts];
 	[[TPAuthenticationManager defaultManager] saveHosts];
 }
 
 - (void)computerDidWake:(NSNotification*)notification
 {
+	TPLog(@"computer woke up");
 	[[TPHostsManager defaultManager] notifyChanges];
 	[self _scheduleWakeRecovery:YES];
 }
@@ -308,7 +358,7 @@ static TPMainController * _mainController = nil;
 	BOOL full = _fullWakeRecovery;
 	_fullWakeRecovery = NO;
 	
-	NSLog(@"teleport: recovering after wake (%@)", full ? @"full" : @"local");
+	TPLog(@"recovering after wake (%@)", full ? @"full" : @"local");
 	
 	[TPEventsController invalidateScreenCaches];
 	
@@ -323,6 +373,13 @@ static TPMainController * _mainController = nil;
 		[(TPEventTapsController*)[TPEventTapsController defaultController] rebuildTapAfterWake];
 		[(TPEventTapsController*)[TPDirectEventTapsController defaultController] rebuildTapAfterWake];
 	}
+
+	/* While this Mac is being controlled, the return hot border is the only way
+	   out for the cursor. Its tracking window can silently die across a sleep /
+	   wake or lock cycle (2026-11-19: the cursor could not leave the controlled
+	   Mac until the app was restarted), so rebuild it from the recorded
+	   placement. */
+	[[TPServerController defaultController] rearmReturnBorderAfterWake];
 	
 	if(!full)
 		return;
@@ -484,6 +541,20 @@ static TPMainController * _mainController = nil;
 - (int)presentAlert:(NSAlert*)alert
 {
 	[self goFrontmost];
+
+	/* A modal alert blocks the main run loop forever when the user cannot see
+	   it (CPSSetFrontProcess no longer reliably brings the app forward on
+	   newer systems - 2026-11-12: the app looked frozen until it was killed).
+	   Bound the modal session so the UI recovers on its own. */
+	__weak NSAlert * weakAlert = alert;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		NSAlert * strongAlert = weakAlert;
+		if(strongAlert != nil && [[strongAlert window] isVisible]) {
+			TPLog(@"a modal alert timed out unanswered, dismissing it");
+			[NSApp stopModal];
+		}
+	});
+
 	int result = [alert runModal];
 	[self leaveFrontmost];
 	return result;

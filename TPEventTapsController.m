@@ -198,7 +198,7 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
 	if(!installed) {
 		/* Fallback: keep the tap on the main run loop, but register it in common
 		   modes so that menu tracking / window dragging do not interrupt capture. */
-		NSLog(@"teleport: could not install event tap thread, falling back to main run loop");
+		TPLog(@"could not install event tap thread, falling back to main run loop");
 		[_threadCondition lock];
 		_eventThread = nil;
 		[_threadCondition unlock];
@@ -368,7 +368,7 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
 	if([TPScreenLockWatcher isLocked])
 		return;
 	
-	NSLog(@"teleport: event tap was disabled by the system, re-enabling");
+	TPLog(@"event tap was disabled by the system, re-enabling");
 	CGEventTapEnable(_eventPort, true);
 }
 
@@ -377,7 +377,7 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
 	if(_eventPort == NULL)
 		return;
 	
-	NSLog(@"teleport: rebuilding the event tap after wake");
+	TPLog(@"rebuilding the event tap after wake");
 	
 	CFRunLoopRef runLoop = _eventRunLoop;
 	if(!_tapOnMainRunLoop && runLoop != NULL && _eventThread != nil) {
@@ -397,7 +397,7 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
 		[_threadCondition unlock];
 		
 		if(threadStillRunning)
-			NSLog(@"teleport: event tap thread did not stop, leaving it alone");
+			TPLog(@"event tap thread did not stop, leaving it alone");
 		return;
 	}
 	
@@ -445,10 +445,17 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
 			CFRelease(_eventSource);
 			_eventSource = NULL;
 		}
-		
+
 		_eventSource = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+
+		if(_keyboardEventSource != NULL) {
+			CFRelease(_keyboardEventSource);
+			_keyboardEventSource = NULL;
+		}
+
+		_keyboardEventSource = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
 		_mouseLocationValid = NO;
-		
+
 		[_pointerQueueLock lock];
 		_pointerQueueHead = 0;
 		_pointerQueueCount = 0;
@@ -466,7 +473,12 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
 			CFRelease(_eventSource);
 			_eventSource = NULL;
 		}
-		
+
+		if(_keyboardEventSource != NULL) {
+			CFRelease(_keyboardEventSource);
+			_keyboardEventSource = NULL;
+		}
+
 		_mouseLocationValid = NO;
 	});
 	
@@ -482,20 +494,39 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
 - (void)_postEvent:(CGEventRef)event withTimestamp:(CGEventTimestamp)timestamp
 {
 	CGEventSetTimestamp(event, timestamp);
-	
-	if(_eventSource != NULL) {
-		CGEventSetSource(event, _eventSource);
+
+	CGEventType type = CGEventGetType(event);
+	BOOL isKeyboardEvent = (type == kCGEventKeyDown || type == kCGEventKeyUp || type == kCGEventFlagsChanged);
+
+	/* A frontmost app can register a keyboard-focus deferring rule (an
+	   NSRemoteView "viewbridge key window"); the system then delivers every
+	   session-tap keyboard event to that token, and typed keys silently
+	   disappear when the target view is dormant. Hardware-level posting
+	   follows the normal focus routing instead, so keyboard events enter
+	   through the HID tap. Pointer events are not part of the deferring
+	   chain and keep using the session tap. */
+	CGEventSourceRef source = _eventSource;
+	if(isKeyboardEvent && _keyboardEventSource != NULL)
+		source = _keyboardEventSource;
+
+	if(source != NULL) {
+		CGEventSetSource(event, source);
 	}
-	
+
 	/* Remember which modifiers the remote keyboard is holding. Clicks made with
 	   the receiving Mac's own trackpad are stamped from its HID keyboard state,
 	   which never contains them; the rewrite tap adds them back for local
 	   hardware input so Shift-click extends a selection. */
-	if(CGEventGetType(event) == kCGEventFlagsChanged) {
+	if(type == kCGEventFlagsChanged) {
 		[self _updateRemoteModifierFlags:CGEventGetFlags(event)];
 	}
-	
-	CGEventPost(kCGSessionEventTap, event);
+
+	if(isKeyboardEvent) {
+		CGEventPost(kCGHIDEventTap, event);
+	}
+	else {
+		CGEventPost(kCGSessionEventTap, event);
+	}
 }
 
 

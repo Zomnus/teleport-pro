@@ -1,7 +1,7 @@
 # teleport-pro
 ## A Virtual KVM for macOS
 
-[![Release](https://img.shields.io/badge/release-v1.4.11-blue)](https://github.com/Zomnus/teleport-pro/releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.4.12-blue)](https://github.com/Zomnus/teleport-pro/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey)](#installation)
 
 Use one keyboard and pointing device to control multiple Macs.
@@ -11,9 +11,9 @@ Use one keyboard and pointing device to control multiple Macs.
 
 ---
 
-## 本次优化说明（v1.4 → v1.4.11）
+## 本次优化说明（v1.4 → v1.4.12）
 
-本仓库 fork 自 [johndbritton/teleport](https://github.com/johndbritton/teleport)（原始作者 [abyssoft](https://github.com/abyssoft)）。上游已停止维护，本项目独立维护、不再与上游同步，仅保留来源记录。针对两台 Mac 之间切换键鼠时的「顺滑度」完成了一轮性能优化与稳定性修复，当前版本为 **v1.4.11**。
+本仓库 fork 自 [johndbritton/teleport](https://github.com/johndbritton/teleport)（原始作者 [abyssoft](https://github.com/abyssoft)）。上游已停止维护，本项目独立维护、不再与上游同步，仅保留来源记录。针对两台 Mac 之间切换键鼠时的「顺滑度」完成了一轮性能优化与稳定性修复，当前版本为 **v1.4.12**。
 
 完整的技术分析、延迟拆解、风险与实施记录见：
 
@@ -127,10 +127,23 @@ Use one keyboard and pointing device to control multiple Macs.
   - 所有切换失败分支补上 `NSLog` 与可见提示（连接失败沿用原有弹窗），不再静默。
 - 协议未变，`PROTOCOL_VERSION` 仍为 21。
 
+#### v1.4.12 修复：macOS 27 升级后的键盘失灵、唤醒后鼠标回不去与排查取证
+
+- 现象一（键盘失灵）：Air→mini 切换后触摸板正常、键盘完全无响应，切换前台应用后才恢复。
+  - 根因：macOS 27 上前台应用可通过 `NSRemoteView` 注册「键盘焦点转发规则」（viewbridge key window），此后所有经 `kCGSessionEventTap` 注入的键盘事件都被投递到该 token 指向的内嵌视图；目标视图休眠时按键就静默消失。鼠标事件不在这条转发链上，故不受影响。
+  - 修复：键盘事件（KeyDown / KeyUp / FlagsChanged）改从 `kCGHIDEventTap` 注入，并配 HID 状态的事件源；走硬件层正常焦点路由，绕开转发链。鼠标事件保持原路径不变。
+- 现象二（鼠标回不去）：mini 被控期间显示器息屏→唤醒后，光标在 mini 屏幕边缘推移永远无法触发回切，只能重启 app。
+  - 根因：被控端的「回切热边框」tracking 窗口跨息屏/锁屏周期后静默失效；v1.4.11 的唤醒自愈只覆盖了客户端侧。
+  - 修复：服务端记录回切边框的创建参数，唤醒恢复时若正被控则整体销毁并重建边框（`rearmReturnBorderAfterWake`）。
+- 现象三（排查取证难）：统一日志把动态内容脱敏为 `<private>`，每次断连复盘都缺少证据。
+  - 修复：新增持久化明文日志 `~/Library/Logs/teleport-pro.log`（1 MB 自动轮转），记录唤醒/息屏/锁屏/会话切换事件、控制会话起止、边框重建、连接成败等关键节点，同时镜像到统一日志。
+- 附带修复：模态错误弹窗加 60 秒自动关闭（弹窗不可见时主线程永久卡死的「假死」路径）；Bonjour 探活 ping 的逐行输出从 `NSLog` 降级为调试日志，不再刷屏。
+- 协议未变，`PROTOCOL_VERSION` 仍为 21。
+
 ### 兼容性提示
 
 - `PROTOCOL_VERSION = 21`：两台 Mac 必须同时升级到 v1.4.x，否则会提示协议版本不匹配（预期行为，避免新旧混用导致事件格式错乱）。
-- v1.4.4 ~ v1.4.11 均未改动协议，与 v1.4.2 / v1.4.3 可互通。
+- v1.4.4 ~ v1.4.12 均未改动协议，与 v1.4.2 / v1.4.3 可互通。
 - UDP 指针通道是可选项：两端都升级时自动启用，任一条件不满足（旧版本、防火墙、端口占用）都会自动回落到纯 TCP，不需要手动配置。
 - 首次运行仍需在「系统设置 → 隐私与安全性 → 辅助功能」中授权。
 

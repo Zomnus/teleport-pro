@@ -268,7 +268,13 @@ static TPServerController * _defaultServerController = nil;
 		[_clientHotBorder close];
 		_clientHotBorder = nil;
 	}
-	
+
+	_clientHotBorderPlacement = screenPlacement;
+	_clientHotBorderScreenFrame = sharedScreenFrame;
+
+	TPLog(@"server: control started by %@, return border at %@",
+		  [host computerName] ?: [host identifier], NSStringFromRect(screenPlacement));
+
 	_clientHotBorder = [[TPHotBorder alloc] initWithRepresentingRect:screenPlacement inRect:sharedScreenFrame];
 	[self setupHotBorder:_clientHotBorder forHost:host];
 	[_clientHotBorder setDelegate:self];
@@ -338,6 +344,8 @@ static TPServerController * _defaultServerController = nil;
 	DebugLog(@"server: stopPlaying: %d", disconnect);
 #endif
 
+	TPLog(@"server: control stopped (disconnect=%d)", disconnect);
+
 	[super stopControlWithDisconnect:disconnect];
 	
 	if(_state == TPServerControlledState) {
@@ -358,10 +366,35 @@ static TPServerController * _defaultServerController = nil;
 		
 		/* Update status menu */
 		[[TPStatusItemController defaultController] updateWithStatus:TPStatusIdle host:nil];
-		
+
 		/* Re-add hot borders for controlling */
 		[[TPClientController defaultController] updateTriggersAndShowVisualHint:NO];
 	}
+}
+
+- (void)rearmReturnBorderAfterWake
+{
+	if(_state != TPServerControlledState || _clientHotBorder == nil)
+		return;
+
+	TPLog(@"server: re-arming the return hot border after wake (placement %@)",
+		  NSStringFromRect(_clientHotBorderPlacement));
+
+	/* Tear the old border down completely: across a sleep/wake or lock cycle
+	   the tracking window can silently stop delivering mouse-entered events,
+	   and a plain delayedActivate does not bring it back. Rebuild it from the
+	   placement recorded when the session started. */
+	TPHotBorder * staleBorder = _clientHotBorder;
+	_clientHotBorder = nil;
+	[self takeDownHotBorder:staleBorder];
+	[staleBorder close];
+
+	TPRemoteHost * host = [[self currentConnection] connectedHost];
+	_clientHotBorder = [[TPHotBorder alloc] initWithRepresentingRect:_clientHotBorderPlacement
+															 inRect:_clientHotBorderScreenFrame];
+	[self setupHotBorder:_clientHotBorder forHost:host];
+	[_clientHotBorder setDelegate:self];
+	[_clientHotBorder delayedActivate];
 }
 
 

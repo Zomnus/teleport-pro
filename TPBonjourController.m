@@ -68,9 +68,9 @@ static void pingRemoteAsync(NSString *host) {
 			NSArray *lines = [output componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
 			for (NSString *line in lines) {
 				if (line.length > 0) {
-					NSLog(@"%@", line);
+					DebugLog(@"%@", line);
 					if ([line containsString:@"bytes from"]) {
-						NSLog(@"ping successfully to %@.", host);
+						TPLog(@"ping ok to %@", host);
 						[task terminate];
 					}
 				}
@@ -459,7 +459,7 @@ static NSString * TPPreferredAddress(NSArray * candidates)
 		if(ipAddressString == nil)
 			return;
 		
-		NSLog(@"teleport: %@ resolved to %@, using %@", [service name], candidates, ipAddressString);
+		TPLog(@"%@ resolved to %@, using %@", [service name], candidates, ipAddressString);
 		
 		TPRemoteHost * remoteHost = [[TPRemoteHost alloc] initWithIdentifier:[recordDict[TPRecordIDKey] stringValue] address:ipAddressString port:port];
 		[remoteHost setAlternateAddresses:candidates];

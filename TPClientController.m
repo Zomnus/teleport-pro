@@ -322,7 +322,7 @@ static TPClientController * _defaultClientController = nil;
 	else {
 		/* Never swallow an edge hit without a trace: this is exactly the state
 		   the user sees as "the edge stopped working". */
-		NSLog(@"teleport: edge hit ignored, host %@ is not available (state=%lu)",
+		TPLog(@"edge hit ignored, host %@ is not available (state=%lu)",
 			  [remoteHost computerName] ?: [hotBorder identifier], (unsigned long)[remoteHost hostState]);
 	}
 	
@@ -374,16 +374,16 @@ static TPClientController * _defaultClientController = nil;
 	DebugLog(@"request start control on %@, _state=%ld", remoteHost, (long)_state);
 	
 	if(remoteHost == nil) {
-		NSLog(@"teleport: switch ignored, no host to control");
+		TPLog(@"switch ignored, no host to control");
 		return NO;
 	}
 	if([remoteHost hostState] != TPHostPeeredOnlineState) {
-		NSLog(@"teleport: switch ignored, %@ is not online (state=%lu)",
+		TPLog(@"switch ignored, %@ is not online (state=%lu)",
 			  [remoteHost computerName] ?: [remoteHost identifier], (unsigned long)[remoteHost hostState]);
 		return NO;
 	}
 	if(_state != TPClientIdleState) {
-		NSLog(@"teleport: switch ignored, client is busy (state=%ld)", (long)_state);
+		TPLog(@"switch ignored, client is busy (state=%ld)", (long)_state);
 		return NO;
 	}
 	
@@ -430,7 +430,7 @@ static TPClientController * _defaultClientController = nil;
 	if(!started) {
 		/* Could not even create a socket (unresolvable address, no route).
 		   Report it instead of silently re-arming the border. */
-		NSLog(@"teleport: could not start a connection to %@ (%@)",
+		TPLog(@"could not start a connection to %@ (%@)",
 			  [remoteHost computerName] ?: [remoteHost identifier], [remoteHost address]);
 		[self _abortControlRequestForHost:remoteHost];
 		return NO;
@@ -924,7 +924,13 @@ static TPClientController * _defaultClientController = nil;
 #if DEBUG_GENERAL
 	DebugLog(@"client: stopControl");
 #endif
-	
+
+	if(_state == TPClientControllingState) {
+		TPLog(@"client: stopping control of %@ (disconnect=%d)",
+			  [[[self currentConnection] connectedHost] computerName]
+			  ?: [[[self currentConnection] connectedHost] identifier], disconnect);
+	}
+
 	if(_state == TPClientControllingState) {
 		/* Deactivate events recorder */
 		[[self eventsController] stopGettingEvents];
@@ -1113,7 +1119,7 @@ void TPSleepCallback(void * refCon, io_service_t service, natural_t messageType,
 	if(host == nil)
 		return;
 	
-	NSLog(@"teleport: connection to %@ failed", [host computerName] ?: [host identifier]);
+	TPLog(@"connection to %@ failed", [host computerName] ?: [host identifier]);
 	
 	NSString * msgTitle = [NSString stringWithFormat:NSLocalizedString(@"Connection to \"%@\" failed.", @"Title for connection failure"), [host computerName]];
 	NSAlert * alert = [NSAlert alertWithMessageText:msgTitle defaultButton:NSLocalizedString(@"OK", nil) alternateButton:nil otherButton:nil informativeTextWithFormat:NSLocalizedString(@"The server may be down, or an encryption problem may have occured. If encryption is enabled, please check that the certificate algorithms match.", nil)];
@@ -1132,9 +1138,15 @@ void TPSleepCallback(void * refCon, io_service_t service, natural_t messageType,
 		{
 			NSData * pointerTokenData = [[message infoDict] objectForKey:TPMsgPointerTokenKey];
 			BOOL wasControlling = [self isControlling];
-			
+
 			[self startControl];
-			
+
+			if(!wasControlling && [self isControlling]) {
+				TPLog(@"client: controlling %@",
+					  [[[self currentConnection] connectedHost] computerName]
+					  ?: [[[self currentConnection] connectedHost] identifier]);
+			}
+
 			/* Only a fresh session opens the optional UDP pointer channel;
 			   a duplicated acknowledgement must not reopen it. */
 			if(!wasControlling && [self isControlling] && [pointerTokenData length] == sizeof(uint64_t)) {
@@ -1142,7 +1154,7 @@ void TPSleepCallback(void * refCon, io_service_t service, natural_t messageType,
 				[pointerTokenData getBytes:&token length:sizeof(token)];
 				[self _startPointerChannelWithToken:token];
 			}
-			
+
 			break;
 		}
 		case TPControlFailureMsgType:

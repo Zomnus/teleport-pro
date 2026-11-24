@@ -15,6 +15,10 @@
 	CFMachPortRef _eventPort;
 	CFRunLoopSourceRef _eventSourceRef;
 	CGEventSourceRef _eventSource;
+
+	/* Keyboard events are posted through the HID tap with a HID-system source
+	   so they follow normal hardware focus routing (see _postEvent:withTimestamp:). */
+	CGEventSourceRef _keyboardEventSource;
 	
 	NSThread * _eventThread;
 	CFRunLoopRef _eventRunLoop;
